@@ -78,7 +78,7 @@ class DFL(nn.Module):
 
     def forward(self, x):
         b, c, a = x.shape  # batch, channels, anchors
-        return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
+        return self.conv(x.view(-1, 4, self.c1, int(a)).transpose(2, 1).softmax(1)).view(-1, 4, int(a))
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
 
 
@@ -115,7 +115,7 @@ class TransformerBlock(nn.Module):
             x = self.conv(x)
         b, _, w, h = x.shape
         p = x.flatten(2).permute(2, 0, 1)
-        return self.tr(p + self.linear(p)).permute(1, 2, 0).reshape(b, self.c2, w, h)
+        return self.tr(p + self.linear(p)).permute(1, 2, 0).reshape(-1, self.c2, int(w), int(h))
 
 
 class Bottleneck(nn.Module):
@@ -175,7 +175,7 @@ class C2(nn.Module):
         self.m = nn.Sequential(*(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)))
 
     def forward(self, x):
-        a, b = self.cv1(x).chunk(2, 1)
+        a, b = self.cv1(x).split((self.c, self.c), 1)
         return self.cv2(torch.cat((self.m(a), b), 1))
 
 
@@ -189,7 +189,7 @@ class C2f(nn.Module):
         self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
     def forward(self, x):
-        y = list(self.cv1(x).chunk(2, 1))
+        y = list(self.cv1(x).split((self.c, self.c), 1))
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
 
@@ -409,9 +409,11 @@ class Detect(nn.Module):
             return x
         elif self.dynamic or self.shape != shape:
             self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+            self.anchors = torch.tensor(self.anchors.cpu().numpy(), dtype=self.anchors.dtype, device=self.anchors.device)
+            self.strides = torch.tensor(self.strides.cpu().numpy(), dtype=self.strides.dtype, device=self.strides.device)
             self.shape = shape
 
-        x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
+        x_cat = torch.cat([xi.view(-1, self.no, int(xi.shape[2] * xi.shape[3])) for xi in x], 2)
         if self.export and self.format in ('saved_model', 'pb', 'tflite', 'edgetpu', 'tfjs'):  # avoid TF FlexSplitV ops
             box = x_cat[:, :self.reg_max * 4]
             cls = x_cat[:, self.reg_max * 4:]
